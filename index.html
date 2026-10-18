@@ -53,6 +53,7 @@ button.g{background:transparent;color:var(--mut);border:1px solid var(--bd)}
     </div>
     <button id="go">Войти</button>
     <div class="err" id="lerr"></div>
+    <button class="g" id="reset">Сбросить подключение (репозиторий и токен)</button>
   </div>
 </div>
 
@@ -98,7 +99,11 @@ function gh(opt={}){
 }
 async function pull(){
   const r=await gh();
-  if(r.status===404)return {data:{names:["ChatGPT","Google Flow"],items:[]},sha:null};
+  if(r.status===404){
+    const rr=await fetch("https://api.github.com/repos/"+cfg.repo,{cache:"no-store",headers:{Authorization:"Bearer "+cfg.token,Accept:"application/vnd.github+json"}});
+    if(!rr.ok)throw new Error("Репозиторий не найден: проверь название (логин/limit-data) и что токен имеет к нему доступ");
+    return {data:{names:["ChatGPT","Google Flow"],items:[]},sha:null};
+  }
   if(r.status===401||r.status===403)throw new Error("Токен не подходит или нет доступа к репозиторию");
   if(!r.ok)throw new Error("GitHub вернул "+r.status+" (проверь название репозитория)");
   const j=await r.json(), f=JSON.parse(atob(j.content.replace(/\n/g,"")));
@@ -120,6 +125,7 @@ async function mutate(fn){
     fn(data);
     const r=await push(data,sha);
     if(r.ok){D=data;render();status("Сохранено");return}
+    if(r.status===404)throw new Error("Репозиторий не найден или у токена нет к нему доступа");
     if(r.status!==409&&r.status!==422)throw new Error("GitHub вернул "+r.status+" (у токена нужно право Contents: Read and write)");
   }
   throw new Error("Конфликт при сохранении, попробуй ещё раз");
@@ -179,6 +185,7 @@ function tick(){
 }
 const fail=e=>status("Ошибка: "+e.message);
 $("#go").onclick=unlock;
+$("#reset").onclick=()=>{try{localStorage.removeItem("lt-cfg")}catch(e){}location.reload()};
 $("#pw").addEventListener("keydown",e=>{if(e.key==="Enter")unlock()});
 $("#sync").onclick=refresh;
 $("#out").onclick=()=>location.reload();
