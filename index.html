@@ -59,11 +59,12 @@ button.g{background:transparent;color:var(--mut);border:1px solid var(--bd)}
 <main id="app" class="hide">
   <div class="top"><h1>Трекер лимитов</h1><span id="st"></span><button class="g" id="sync">Обновить</button><button class="g" id="out">Выйти</button></div>
   <div class="card f">
+    <select id="svc"></select>
     <div class="r2">
-      <select id="svc"></select>
+      <input id="hrs" type="text" inputmode="decimal" placeholder="через сколько часов, например 14">
       <input id="at" type="datetime-local">
     </div>
-    <div class="q"><button class="g" data-h="1">+1 ч</button><button class="g" data-h="5">+5 ч</button><button class="g" data-h="24">+1 день</button><button class="g" data-h="168">+7 дней</button></div>
+    <div class="q"><button class="g" data-h="5">+5 ч</button><button class="g" data-h="14">+14 ч</button><button class="g" data-h="21">+21 ч</button><button class="g" data-h="24">+24 ч</button></div>
     <textarea id="mails" placeholder="почты через пробел, запятую или с новой строки"></textarea>
     <button id="add">Добавить</button>
     <div class="hint">Если почта уже есть в этом сервисе, у неё просто обновится время.</div>
@@ -77,7 +78,7 @@ const enc=new TextEncoder(), dec=new TextDecoder();
 const b64=u=>{let s="";u.forEach(c=>s+=String.fromCharCode(c));return btoa(s)};
 const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 const esc=t=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let pw,cfg,K,SALT,D={names:["Сервис 1","Сервис 2"],items:[]},seen=new Set();
+let pw,cfg,K,SALT,D={names:["ChatGPT","Google Flow"],items:[]},seen=new Set();
 
 async function key(p,salt){
   const m=await crypto.subtle.importKey("raw",enc.encode(p),"PBKDF2",false,["deriveKey"]);
@@ -97,7 +98,7 @@ function gh(opt={}){
 }
 async function pull(){
   const r=await gh();
-  if(r.status===404)return {data:{names:["Сервис 1","Сервис 2"],items:[]},sha:null};
+  if(r.status===404)return {data:{names:["ChatGPT","Google Flow"],items:[]},sha:null};
   if(r.status===401||r.status===403)throw new Error("Токен не подходит или нет доступа к репозиторию");
   if(!r.ok)throw new Error("GitHub вернул "+r.status+" (проверь название репозитория)");
   const j=await r.json(), f=JSON.parse(atob(j.content.replace(/\n/g,"")));
@@ -181,11 +182,17 @@ $("#go").onclick=unlock;
 $("#pw").addEventListener("keydown",e=>{if(e.key==="Enter")unlock()});
 $("#sync").onclick=refresh;
 $("#out").onclick=()=>location.reload();
-document.querySelectorAll("[data-h]").forEach(b=>b.onclick=()=>{
-  const d=new Date(Date.now()+ +b.dataset.h*3600e3);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());
+function fillFromHours(){
+  const h=parseFloat($("#hrs").value.replace(",","."));
+  if(isNaN(h)){return}
+  const d=new Date(Date.now()+h*3600e3);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());
   $("#at").value=d.toISOString().slice(0,16);
-});
+}
+$("#hrs").addEventListener("input",fillFromHours);
+$("#at").addEventListener("input",()=>{$("#hrs").value=""});
+document.querySelectorAll("[data-h]").forEach(b=>b.onclick=()=>{$("#hrs").value=b.dataset.h;fillFromHours()});
 $("#add").onclick=()=>{
+  if($("#hrs").value.trim())fillFromHours();
   const at=new Date($("#at").value).getTime(), s=+$("#svc").value;
   const mails=[...new Set($("#mails").value.split(/[\s,;]+/).filter(x=>x.includes("@")))];
   if(isNaN(at)||!mails.length){status("Нужны время и хотя бы одна почта");return}
@@ -195,7 +202,7 @@ $("#add").onclick=()=>{
       const o=d.items.find(x=>x.s===s&&x.email.toLowerCase()===em.toLowerCase());
       if(o)o.at=at;else d.items.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),s,email:em,at});
     });
-  }).then(()=>{$("#mails").value="";seen.clear();D.items.forEach(x=>{if(x.at<=Date.now())seen.add(x.id)})}).catch(fail);
+  }).then(()=>{$("#mails").value="";$("#hrs").value="";seen.clear();D.items.forEach(x=>{if(x.at<=Date.now())seen.add(x.id)})}).catch(fail);
 };
 $("#grid").addEventListener("click",e=>{
   const id=e.target.dataset.del;if(!id)return;
