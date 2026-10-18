@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Трекер лимитов</title>
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--tx:#1c1c1a;--mut:#74746e;--bd:#e2e2dd;--ac:#3b6fe0;--ok:#1f9d55;--wait:#c77d0a;--dn:#d64545;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161617;--card:#212123;--tx:#ececea;--mut:#9a9a94;--bd:#333336;--ac:#6b93f0;--ok:#4cc27f;--wait:#e8a53a;--dn:#ef6b6b;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+main{max-width:980px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:20px;margin:0}
+.top{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.top span{flex:1;color:var(--mut);font-size:12.5px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:720px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:16px}
+.grid .card{margin:0}
+input,select,textarea{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:9px;padding:9px 10px;width:100%;min-width:0}
+textarea{resize:vertical;min-height:64px}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--ac);outline-offset:-1px}
+button{font:inherit;cursor:pointer;border:0;border-radius:9px;padding:9px 12px;background:var(--ac);color:#fff}
+button.g{background:transparent;color:var(--mut);border:1px solid var(--bd)}
+.f{display:grid;gap:8px}
+.r2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.q{display:flex;gap:6px;flex-wrap:wrap}
+.name{font-size:17px;font-weight:600;border:0;border-bottom:1px dashed var(--bd);border-radius:0;background:transparent;padding:2px 0 6px;margin-bottom:8px}
+.row{display:flex;gap:8px;align-items:center;padding:10px 0;border-top:1px solid var(--bd)}
+.info{flex:1;min-width:0}
+.mail{font-weight:500;overflow-wrap:anywhere}
+.when{color:var(--mut);font-size:12.5px}
+.badge{font-size:12.5px;font-weight:600;white-space:nowrap}
+.ok{color:var(--ok)}.wait{color:var(--wait)}
+.x{background:transparent;color:var(--dn);padding:4px 8px;font-size:18px;line-height:1}
+.empty{color:var(--mut);text-align:center;padding:12px 0 2px;font-size:13px}
+.err{color:var(--dn);font-size:13px;min-height:18px}
+.hint{color:var(--mut);font-size:12.5px}
+#lock{max-width:380px;margin:12vh auto 0;padding:0 16px}
+.hide{display:none}
+</style>
+</head>
+<body>
+
+<div id="lock">
+  <div class="card f">
+    <h1>Трекер лимитов</h1>
+    <input id="pw" type="password" placeholder="пароль" autocomplete="current-password">
+    <div id="setup" class="f hide">
+      <input id="repo" placeholder="репозиторий с данными: логин/limit-data">
+      <input id="tok" type="password" placeholder="GitHub токен (только для этого репозитория)">
+      <div class="hint">Это нужно один раз на каждом устройстве. Данные шифруются паролем, потерянный пароль восстановить нельзя.</div>
+    </div>
+    <button id="go">Войти</button>
+    <div class="err" id="lerr"></div>
+  </div>
+</div>
+
+<main id="app" class="hide">
+  <div class="top"><h1>Трекер лимитов</h1><span id="st"></span><button class="g" id="sync">Обновить</button><button class="g" id="out">Выйти</button></div>
+  <div class="card f">
+    <div class="r2">
+      <select id="svc"></select>
+      <input id="at" type="datetime-local">
+    </div>
+    <div class="q"><button class="g" data-h="1">+1 ч</button><button class="g" data-h="5">+5 ч</button><button class="g" data-h="24">+1 день</button><button class="g" data-h="168">+7 дней</button></div>
+    <textarea id="mails" placeholder="почты через пробел, запятую или с новой строки"></textarea>
+    <button id="add">Добавить</button>
+    <div class="hint">Если почта уже есть в этом сервисе, у неё просто обновится время.</div>
+  </div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script>
+const $=s=>document.querySelector(s), FILE="data.enc.json";
+const enc=new TextEncoder(), dec=new TextDecoder();
+const b64=u=>{let s="";u.forEach(c=>s+=String.fromCharCode(c));return btoa(s)};
+const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let pw,cfg,K,SALT,D={names:["Сервис 1","Сервис 2"],items:[]},seen=new Set();
+
+async function key(p,salt){
+  const m=await crypto.subtle.importKey("raw",enc.encode(p),"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt,iterations:200000,hash:"SHA-256"},m,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+}
+async function seal(k,obj,salt){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv},k,enc.encode(JSON.stringify(obj))));
+  return {v:1,salt:b64(salt),iv:b64(iv),ct:b64(ct)};
+}
+async function unseal(k,f){
+  return JSON.parse(dec.decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(f.iv)},k,unb64(f.ct))));
+}
+function gh(opt={}){
+  const url=`https://api.github.com/repos/${cfg.repo}/contents/${FILE}`+(opt.method?"":"?t="+Date.now());
+  return fetch(url,{...opt,cache:"no-store",headers:{Authorization:"Bearer "+cfg.token,Accept:"application/vnd.github+json"}});
+}
+async function pull(){
+  const r=await gh();
+  if(r.status===404)return {data:{names:["Сервис 1","Сервис 2"],items:[]},sha:null};
+  if(r.status===401||r.status===403)throw new Error("Токен не подходит или нет доступа к репозиторию");
+  if(!r.ok)throw new Error("GitHub вернул "+r.status+" (проверь название репозитория)");
+  const j=await r.json(), f=JSON.parse(atob(j.content.replace(/\n/g,"")));
+  if(!K){SALT=unb64(f.salt);K=await key(pw,SALT)}
+  let data;
+  try{data=await unseal(K,f)}catch(e){throw new Error("Неверный пароль")}
+  return {data,sha:j.sha};
+}
+async function push(data,sha){
+  if(!K){SALT=crypto.getRandomValues(new Uint8Array(16));K=await key(pw,SALT)}
+  const body={message:"update",content:btoa(JSON.stringify(await seal(K,data,SALT)))};
+  if(sha)body.sha=sha;
+  return gh({method:"PUT",body:JSON.stringify(body)});
+}
+async function mutate(fn){
+  status("Сохраняю…");
+  for(let i=0;i<3;i++){
+    const {data,sha}=await pull();
+    fn(data);
+    const r=await push(data,sha);
+    if(r.ok){D=data;render();status("Сохранено");return}
+    if(r.status!==409&&r.status!==422)throw new Error("GitHub вернул "+r.status+" (у токена нужно право Contents: Read and write)");
+  }
+  throw new Error("Конфликт при сохранении, попробуй ещё раз");
+}
+function status(t){$("#st").textContent=t}
+async function refresh(){
+  try{const {data}=await pull();D=data;render();status("Обновлено "+new Date().toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"}))}
+  catch(e){status(e.message)}
+}
+
+async function unlock(){
+  $("#lerr").textContent="";pw=$("#pw").value;
+  if(!pw){$("#lerr").textContent="Введи пароль";return}
+  $("#go").disabled=true;$("#go").textContent="Проверяю…";
+  try{
+    const raw=localStorage.getItem("lt-cfg");K=SALT=null;
+    if(raw){
+      const f=JSON.parse(raw);
+      try{cfg=await unseal(await key(pw,unb64(f.salt)),f)}catch(e){throw new Error("Неверный пароль")}
+    }else{
+      cfg={repo:$("#repo").value.trim(),token:$("#tok").value.trim()};
+      if(!cfg.repo||!cfg.token)throw new Error("Укажи репозиторий и токен");
+    }
+    const {data}=await pull();D=data;
+    if(!raw){
+      const salt=crypto.getRandomValues(new Uint8Array(16));
+      try{localStorage.setItem("lt-cfg",JSON.stringify(await seal(await key(pw,salt),cfg,salt)))}catch(e){}
+    }
+    $("#lock").classList.add("hide");$("#app").classList.remove("hide");
+    D.items.forEach(x=>{if(x.at<=Date.now())seen.add(x.id)});
+    render();status("Готово");
+  }catch(e){$("#lerr").textContent=e.message}
+  $("#go").disabled=false;$("#go").textContent="Войти";
+}
+
+function left(ms){const m=Math.floor(ms/60000),d=Math.floor(m/1440),h=Math.floor(m%1440/60);return (d?d+" д ":"")+(h?h+" ч ":"")+m%60+" мин"}
+const fmt=t=>new Date(t).toLocaleString("ru-RU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+function render(){
+  if($("#app").classList.contains("hide"))return;
+  const now=Date.now(), sel=$("#svc"), cur=sel.value||"0";
+  sel.innerHTML=D.names.map((n,i)=>`<option value="${i}">${esc(n)}</option>`).join("");sel.value=cur;
+  if(document.activeElement&&document.activeElement.classList.contains("name"))return;
+  $("#grid").innerHTML=D.names.map((n,i)=>{
+    const rows=D.items.filter(x=>x.s===i).sort((a,b)=>a.at-b.at);
+    return `<section class="card"><input class="name" data-i="${i}" value="${esc(n)}" aria-label="Название">
+    ${rows.length?rows.map(x=>{const r=x.at<=now;return `<div class="row"><div class="info"><div class="mail">${esc(x.email)}</div><div class="when">сброс: ${fmt(x.at)}</div></div><div class="badge ${r?"ok":"wait"}">${r?"лимит сброшен":"через "+left(x.at-now)}</div><button class="x" data-del="${x.id}" title="Удалить">×</button></div>`}).join(""):'<div class="empty">Пока пусто</div>'}</section>`}).join("");
+}
+function tick(){
+  const now=Date.now();
+  D.items.forEach(x=>{
+    if(x.at<=now&&!seen.has(x.id)){
+      seen.add(x.id);
+      if(window.Notification&&Notification.permission==="granted")new Notification("Лимит сброшен",{body:D.names[x.s]+" · "+x.email});
+    }
+  });
+  render();
+}
+const fail=e=>status("Ошибка: "+e.message);
+$("#go").onclick=unlock;
+$("#pw").addEventListener("keydown",e=>{if(e.key==="Enter")unlock()});
+$("#sync").onclick=refresh;
+$("#out").onclick=()=>location.reload();
+document.querySelectorAll("[data-h]").forEach(b=>b.onclick=()=>{
+  const d=new Date(Date.now()+ +b.dataset.h*3600e3);d.setMinutes(d.getMinutes()-d.getTimezoneOffset());
+  $("#at").value=d.toISOString().slice(0,16);
+});
+$("#add").onclick=()=>{
+  const at=new Date($("#at").value).getTime(), s=+$("#svc").value;
+  const mails=[...new Set($("#mails").value.split(/[\s,;]+/).filter(x=>x.includes("@")))];
+  if(isNaN(at)||!mails.length){status("Нужны время и хотя бы одна почта");return}
+  if(window.Notification&&Notification.permission==="default")Notification.requestPermission();
+  mutate(d=>{
+    mails.forEach(em=>{
+      const o=d.items.find(x=>x.s===s&&x.email.toLowerCase()===em.toLowerCase());
+      if(o)o.at=at;else d.items.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),s,email:em,at});
+    });
+  }).then(()=>{$("#mails").value="";seen.clear();D.items.forEach(x=>{if(x.at<=Date.now())seen.add(x.id)})}).catch(fail);
+};
+$("#grid").addEventListener("click",e=>{
+  const id=e.target.dataset.del;if(!id)return;
+  mutate(d=>{d.items=d.items.filter(x=>x.id!==id)}).catch(fail);
+});
+$("#grid").addEventListener("change",e=>{
+  if(!e.target.classList.contains("name"))return;
+  const i=+e.target.dataset.i,v=e.target.value.trim().slice(0,40)||("Сервис "+(i+1));
+  mutate(d=>{d.names[i]=v}).catch(fail);
+});
+setInterval(tick,30000);
+setInterval(()=>{if(!document.hidden&&!$("#app").classList.contains("hide"))refresh()},90000);
+if(!localStorage.getItem("lt-cfg"))$("#setup").classList.remove("hide");
+</script>
+</body>
+</html>
