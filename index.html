@@ -47,13 +47,12 @@ button.g{background:transparent;color:var(--mut);border:1px solid var(--bd)}
     <h1>Трекер лимитов</h1>
     <input id="pw" type="password" placeholder="пароль" autocomplete="current-password">
     <div id="setup" class="f hide">
-      <input id="repo" placeholder="репозиторий с данными: логин/limit-data">
-      <input id="tok" type="password" placeholder="GitHub токен (только для этого репозитория)">
+      <input id="repo" placeholder="ссылка веб-приложения Google (https://script.google.com/…/exec)">
       <div class="hint">Это нужно один раз на каждом устройстве. Данные шифруются паролем, потерянный пароль восстановить нельзя.</div>
     </div>
     <button id="go">Войти</button>
     <div class="err" id="lerr"></div>
-    <button class="g" id="reset">Сбросить подключение (репозиторий и токен)</button>
+    <button class="g" id="reset">Сбросить подключение (ссылку)</button>
   </div>
 </div>
 
@@ -70,6 +69,15 @@ button.g{background:transparent;color:var(--mut);border:1px solid var(--bd)}
     <button id="add">Добавить</button>
     <div class="hint">Если почта уже есть в этом сервисе, у неё просто обновится время.</div>
   </div>
+  <details class="card">
+    <summary>Импорт старых данных из GitHub</summary>
+    <div class="f" style="margin-top:10px">
+      <div class="hint">Открой файл data.enc.json в репозитории limit-data на github.com, нажми «Copy raw file» (значок копирования справа над файлом) и вставь сюда.</div>
+      <textarea id="impt" placeholder="содержимое data.enc.json"></textarea>
+      <input id="impp" type="password" placeholder="пароль, которым сохраняли тогда (пусто = текущий)">
+      <button id="imp">Импортировать</button>
+    </div>
+  </details>
   <div class="grid" id="grid"></div>
 </main>
 
@@ -93,49 +101,42 @@ async function seal(k,obj,salt){
 async function unseal(k,f){
   return JSON.parse(dec.decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(f.iv)},k,unb64(f.ct))));
 }
-function gh(opt={}){
-  const url=`https://api.github.com/repos/${cfg.repo}/contents/${FILE}`+(opt.method?"":"?t="+Date.now());
-  return fetch(url,{...opt,cache:"no-store",headers:{Authorization:"Bearer "+cfg.token,Accept:"application/vnd.github+json"}});
-}
+let VER=0;
+const fresh=()=>({names:["ChatGPT","Google Flow"],items:[]});
+const sha=async t=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",enc.encode(t)))].map(x=>x.toString(16).padStart(2,"0")).join("");
 async function pull(){
-  const r=await gh();
-  if(r.status===404){
-    const rr=await fetch("https://api.github.com/repos/"+cfg.repo,{cache:"no-store",headers:{Authorization:"Bearer "+cfg.token,Accept:"application/vnd.github+json"}});
-    if(!rr.ok)throw new Error("Репозиторий не найден: проверь название (логин/limit-data) и что токен имеет к нему доступ");
-    return {data:{names:["ChatGPT","Google Flow"],items:[]},sha:null};
-  }
-  if(r.status===401||r.status===403)throw new Error("Токен не подходит или нет доступа к репозиторию");
-  if(!r.ok)throw new Error("GitHub вернул "+r.status+" (проверь название репозитория)");
-  const j=await r.json(), f=JSON.parse(atob(j.content.replace(/\n/g,"")));
-  if(!K){SALT=unb64(f.salt);K=await key(pw,SALT)}
-  let data;
-  try{data=await unseal(K,f)}catch(e){throw new Error("Неверный пароль")}
-  return {data,sha:j.sha};
+  let j;
+  try{const r=await fetch(cfg.url+(cfg.url.includes("?")?"&":"?")+"t="+Date.now(),{cache:"no-store"});j=await r.json()}
+  catch(e){throw new Error("Нет связи со скриптом Google: проверь ссылку и что доступ открыт для всех")}
+  if(!j||!j.ok)throw new Error("Скрипт ответил с ошибкой");
+  VER=j.ver;
+  if(!j.blob)return {data:fresh()};
+  if(!K){SALT=unb64(j.blob.salt);K=await key(pw,SALT)}
+  try{return {data:await unseal(K,j.blob)}}catch(e){throw new Error("Неверный пароль")}
 }
-async function push(data,sha){
+async function push(data){
   if(!K){SALT=crypto.getRandomValues(new Uint8Array(16));K=await key(pw,SALT)}
-  const body={message:"update",content:btoa(JSON.stringify(await seal(K,data,SALT)))};
-  if(sha)body.sha=sha;
-  return gh({method:"PUT",body:JSON.stringify(body)});
+  const body={auth:await sha("lt-auth:"+pw),ver:VER,blob:await seal(K,data,SALT)};
+  const r=await fetch(cfg.url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(body)});
+  return r.json();
 }
 async function mutate(fn){
   status("Сохраняю…");
   for(let i=0;i<3;i++){
-    const {data,sha}=await pull();
+    const {data}=await pull();
     fn(data);
-    const r=await push(data,sha);
+    const r=await push(data);
     if(r.ok){D=data;render();status("Сохранено");return}
-    if(r.status===404)throw new Error("Репозиторий не найден или у токена нет к нему доступа");
-    if(r.status!==409&&r.status!==422)throw new Error("GitHub вернул "+r.status+" (у токена нужно право Contents: Read and write)");
+    if(r.err==="auth")throw new Error("Неверный пароль");
+    if(r.err!=="conflict")throw new Error("Ошибка сохранения");
   }
   throw new Error("Конфликт при сохранении, попробуй ещё раз");
 }
-function status(t){$("#st").textContent=t}
 async function refresh(){
   try{const {data}=await pull();D=data;render();status("Обновлено "+new Date().toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"}))}
   catch(e){status(e.message)}
 }
-
+function status(t){$("#st").textContent=t}
 async function unlock(){
   $("#lerr").textContent="";pw=$("#pw").value;
   if(!pw){$("#lerr").textContent="Введи пароль";return}
@@ -146,8 +147,8 @@ async function unlock(){
       const f=JSON.parse(raw);
       try{cfg=await unseal(await key(pw,unb64(f.salt)),f)}catch(e){throw new Error("Неверный пароль")}
     }else{
-      cfg={repo:$("#repo").value.trim(),token:$("#tok").value.trim()};
-      if(!cfg.repo||!cfg.token)throw new Error("Укажи репозиторий и токен");
+      cfg={url:$("#repo").value.trim()};
+      if(!/^https:\/\/script\.google\.com\//.test(cfg.url))throw new Error("Вставь ссылку веб-приложения (начинается с https://script.google.com/)");
     }
     const {data}=await pull();D=data;
     if(!raw){
@@ -210,6 +211,21 @@ $("#add").onclick=()=>{
       if(o)o.at=at;else d.items.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),s,email:em,at});
     });
   }).then(()=>{$("#mails").value="";$("#hrs").value="";seen.clear();D.items.forEach(x=>{if(x.at<=Date.now())seen.add(x.id)})}).catch(fail);
+};
+$("#imp").onclick=async()=>{
+  try{
+    const f=JSON.parse($("#impt").value.trim());
+    let old;
+    try{old=await unseal(await key($("#impp").value||pw,unb64(f.salt)),f)}
+    catch(e){throw new Error("Не удалось расшифровать: проверь пароль, которым сохраняли раньше")}
+    let n=0;
+    await mutate(d=>{(old.items||[]).forEach(x=>{
+      if(!d.items.some(y=>y.s===x.s&&y.email.toLowerCase()===x.email.toLowerCase())){
+        d.items.push({id:x.id||Date.now().toString(36)+Math.random().toString(36).slice(2,5),s:x.s,email:x.email,at:x.at});n++;
+      }})});
+    seen.clear();D.items.forEach(x=>{if(x.at<=Date.now())seen.add(x.id)});
+    $("#impt").value="";$("#impp").value="";status("Импортировано записей: "+n);
+  }catch(e){status(e instanceof SyntaxError?"Вставь содержимое файла целиком":e.message)}
 };
 $("#grid").addEventListener("click",e=>{
   const id=e.target.dataset.del;if(!id)return;
