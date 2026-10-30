@@ -87,7 +87,7 @@ const enc=new TextEncoder(), dec=new TextDecoder();
 const b64=u=>{let s="";u.forEach(c=>s+=String.fromCharCode(c));return btoa(s)};
 const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 const esc=t=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let pw,cfg,K,SALT,D={names:["ChatGPT","Google Flow"],items:[]},seen=new Set();
+let pw,cfg,K,SALT,D={names:["ChatGPT","Google Flow","SeaArt"],items:[],mig:1},seen=new Set();
 
 async function key(p,salt){
   const m=await crypto.subtle.importKey("raw",enc.encode(p),"PBKDF2",false,["deriveKey"]);
@@ -102,7 +102,7 @@ async function unseal(k,f){
   return JSON.parse(dec.decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(f.iv)},k,unb64(f.ct))));
 }
 let VER=0;
-const fresh=()=>({names:["ChatGPT","Google Flow"],items:[]});
+const fresh=()=>({names:["ChatGPT","Google Flow","SeaArt"],items:[],mig:1});
 const sha=async t=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",enc.encode(t)))].map(x=>x.toString(16).padStart(2,"0")).join("");
 async function pull(){
   let j;
@@ -112,7 +112,7 @@ async function pull(){
   VER=j.ver;
   if(!j.blob)return {data:fresh()};
   if(!K){SALT=unb64(j.blob.salt);K=await key(pw,SALT)}
-  try{return {data:await unseal(K,j.blob)}}catch(e){throw new Error("Неверный пароль")}
+  try{const d=await unseal(K,j.blob);if(!d.mig){d.names.push("SeaArt");d.mig=1}return {data:d}}catch(e){throw new Error("Неверный пароль")}
 }
 async function push(data){
   if(!K){SALT=crypto.getRandomValues(new Uint8Array(16));K=await key(pw,SALT)}
